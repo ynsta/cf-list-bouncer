@@ -183,12 +183,10 @@ jobs:
         working-directory: release
         env:
           COSIGN_YES: "true"
-        run: |
-          cosign sign-blob \
-            --output-signature SHA256SUMS.sig \
-            --output-certificate SHA256SUMS.pem \
-            SHA256SUMS
-          cosign sign-blob --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+        # cosign v3 writes the Sigstore bundle format only: one file holding signature,
+        # certificate and transparency-log proof. The old --output-signature /
+        # --output-certificate pair is rejected without --bundle.
+        run: cosign sign-blob --bundle SHA256SUMS.cosign.bundle SHA256SUMS
 
       - name: extract release notes from CHANGELOG.md
         env:
@@ -212,8 +210,7 @@ jobs:
 
           ```sh
           cosign verify-blob \
-            --certificate SHA256SUMS.pem \
-            --signature   SHA256SUMS.sig \
+            --bundle SHA256SUMS.cosign.bundle \
             --certificate-identity-regexp 'https://github.com/ynsta/cf-list-bouncer/.+' \
             --certificate-oidc-issuer     'https://token.actions.githubusercontent.com' \
             SHA256SUMS
@@ -235,4 +232,4 @@ jobs:
             --title "$TAG" \
             --notes-file ../release-notes.md \
             --verify-tag \
-            cf-list-bouncer_* SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem SHA256SUMS.cosign.bundle
+            cf-list-bouncer_* SHA256SUMS SHA256SUMS.cosign.bundle
