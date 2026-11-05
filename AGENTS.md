@@ -336,7 +336,9 @@ Doubt → ask user before adding the resource.
 
 After modifying any Go file: run `golangci-lint run ./...` before marking work complete.
 Fix all lint errors, re-run until clean. Lint errors = task not done.
-`gofmt` non-negotiable — zero diff allowed. Run `gofmt -w .` if in doubt.
+`gofmt` non-negotiable — zero diff allowed. Run `go fmt ./...` if in doubt — never
+`gofmt -w .`: it also rewrites `vendor/`, which must stay byte-identical to upstream
+(the CI vendor check fails on it).
 
 **Fail fast on bad config.** Validate config at startup, refuse to start on invalid input —
 never silently fall back to default. Reject: durations without units (`60` vs `60s`),
