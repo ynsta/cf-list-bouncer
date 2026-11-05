@@ -117,7 +117,7 @@ Closing a work cycle: update spec/design/CODEMAP, delete transient files, run
    workflows.
 4. `release.yml` re-runs every gate, builds the Linux binaries with SBOMs, signs
    `SHA256SUMS` with cosign and publishes the GitHub Release with the CHANGELOG section as
-   notes. `image.yml` pushes and signs `ghcr.io/ynsta/cf-list-bouncer:X.Y.Z` and `latest`.
+   notes. `image.yml` pushes and signs `ghcr.io/ynsta/cf-list-bouncer:vX.Y.Z` and `latest`.
 5. First release only: make the ghcr.io package public (package settings on GitHub).
 
 Dry run before a real release: tag `v0.0.0-rc1`, check both workflows, delete the

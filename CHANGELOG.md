@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-05
+
 ### Added
 
 - Sync of active CrowdSec `Ip` and `Range` bans into a Cloudflare IP List, filtered by
@@ -18,4 +20,5 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Signed Linux binaries with SBOM, and a signed multi-arch container image on ghcr.io.
 - `.env.example` listing every setting with its default.
 
-[Unreleased]: https://github.com/ynsta/cf-list-bouncer/commits/main
+[Unreleased]: https://github.com/ynsta/cf-list-bouncer/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ynsta/cf-list-bouncer/releases/tag/v0.1.0
