@@ -28,10 +28,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # Logs in to ghcr.io with GITHUB_TOKEN when KO_DOCKER_REPO is on ghcr.io.
       - uses: ko-build/setup-ko@v0.10
         with:
           version: v0.19.1
+      # Explicit login: setup-ko only logs in when it computes KO_DOCKER_REPO itself, and
+      # silently skips it when the variable is already set (as here), which made the push
+      # fail with DENIED. ko login also writes the Docker config that cosign reads.
+      - name: log in to ghcr.io
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | ko login ghcr.io --username "${{ github.actor }}" --password-stdin
       - uses: sigstore/cosign-installer@v4.1.3
 
       - name: build and push

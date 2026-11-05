@@ -81,8 +81,9 @@ startup with every error listed.
 
 ## Verifying a release
 
-Binaries are signed with cosign (keyless) and ship with a CycloneDX SBOM; each GitHub
-Release lists the verification command. The container image is signed too:
+Binaries ship with a CycloneDX SBOM; their `SHA256SUMS` is signed with cosign (keyless,
+Sigstore bundle `SHA256SUMS.cosign.bundle`). Each GitHub Release lists the verification
+command. The container image is signed too:
 
 ```sh
 cosign verify ghcr.io/ynsta/cf-list-bouncer:<tag> \
