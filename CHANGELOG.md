@@ -16,5 +16,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Configuration from environment variables, with `*_FILE` variants for secrets; invalid
   configuration stops the process at startup.
 - Signed Linux binaries with SBOM, and a signed multi-arch container image on ghcr.io.
+- `.env.example` listing every setting with its default.
 
 [Unreleased]: https://github.com/ynsta/cf-list-bouncer/commits/main

@@ -38,15 +38,15 @@ Details: [behaviour spec](docs/spec/sync.md), [architecture](docs/design/archite
    ```sh
    cscli bouncers add cf-list-bouncer
    ```
-3. **Run** it next to CrowdSec (Docker Compose example in
+3. **Configure**: copy the example and fill in the four required values:
+   ```sh
+   cp .env.example .env && chmod 600 .env
+   ```
+4. **Run** it on the Docker network where CrowdSec runs (Compose example in
    [docs/sre/deploy.md](docs/sre/deploy.md)):
    ```sh
-   docker run -d --name cf-list-bouncer \
-     -e CROWDSEC_LAPI_URL=http://crowdsec:8080 \
-     -e CROWDSEC_LAPI_KEY=<bouncer key> \
-     -e CF_API_TOKEN=<token> \
-     -e CF_ACCOUNT_ID=<32-hex account id> \
-     -e CF_LIST_ID=<32-hex list id> \
+   docker run -d --name cf-list-bouncer --restart unless-stopped \
+     --network <crowdsec network> --env-file .env \
      ghcr.io/ynsta/cf-list-bouncer:latest
    ```
 

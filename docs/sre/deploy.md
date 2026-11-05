@@ -13,7 +13,9 @@ Put the printed key in `.env` as `CF_LIST_BOUNCER_LAPI_KEY` (it is shown only on
 
 ## 2. Docker Compose
 
-Add the service to the compose file that runs CrowdSec, on the same network:
+Add the service to the compose file that runs CrowdSec, on the same network. The
+variables below come from that stack's `.env`; for a standalone file, replace the
+`environment:` block with `env_file: .env` built from `.env.example`.
 
 ```yaml
 services:
