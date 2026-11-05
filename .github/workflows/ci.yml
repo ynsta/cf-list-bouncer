@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# NOTE: do not set `GOFLAGS: -mod=vendor` at workflow level.
+# With a committed `vendor/` directory and `go.mod` >= go 1.14, the
+# toolchain already auto-selects vendor mode. Setting it explicitly
+# *breaks* `go install <pkg>@<version>` with:
+#   `cannot query module due to -mod=vendor`.
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+  unit-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: unit test with race detector
+        env:
+          CGO_ENABLED: "1" # -race needs cgo
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
+  vendor-check:
+    # vendor/ is committed: a go.mod change without `go mod vendor` must fail here,
+    # not surface as a confusing build error later.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod tidy && go mod vendor
+      - run: |
+          if ! git diff --exit-code -- go.mod go.sum vendor; then
+            echo "::error::go.mod, go.sum or vendor/ out of date: run go mod tidy && go mod vendor"
+            exit 1
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build -v ./...
+
+  docs:
+    # Doc indexes and relative links (AGENTS.md "Documentation policy"). Not --strict:
+    # transient files in docs/superpowers are allowed on a branch, only blocked at closing.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/check-docs.sh

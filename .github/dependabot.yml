@@ -1,0 +1,19 @@
+# Dependency refresh cadence, see AGENTS.md "Dependency Upgrade Policy".
+# vendor/ is committed: Dependabot re-vendors Go modules in its PRs.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    vendor: true
+    schedule:
+      interval: monthly
+    groups:
+      go-modules:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

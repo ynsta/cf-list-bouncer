@@ -1,0 +1,238 @@
+name: Release
+
+# Triggered on any version tag (`v*`). All gate jobs must pass before
+# the build matrix runs; release publishes the GitHub Release.
+# Tags are pushed from a developer machine: a tag pushed with GITHUB_TOKEN
+# would not trigger this workflow (GitHub loop protection).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# NOTE: do not set `GOFLAGS: -mod=vendor` at workflow level.
+# Breaks `go install <pkg>@<version>`. Vendor mode auto-applies for
+# build/test/lint when `vendor/` is present and `go.mod` >= go 1.14.
+
+jobs:
+  # ----- gates (copy of ci.yml jobs, kept inline for audit) -------------
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+  unit-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: unit test with race detector
+        env:
+          CGO_ENABLED: "1" # -race needs cgo
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
+  vendor-check:
+    # vendor/ is committed: a go.mod change without `go mod vendor` must fail here,
+    # not surface as a confusing build error later.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod tidy && go mod vendor
+      - run: |
+          if ! git diff --exit-code -- go.mod go.sum vendor; then
+            echo "::error::go.mod, go.sum or vendor/ out of date: run go mod tidy && go mod vendor"
+            exit 1
+          fi
+
+  # ----- build matrix --------------------------------------------------
+  build:
+    needs: [lint, unit-test, govulncheck, vendor-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        # A server daemon: Linux only.
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: resolve version
+        id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            VERSION="0.0.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "asset_base=cf-list-bouncer_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}" >> "$GITHUB_OUTPUT"
+
+      - name: build static stripped binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS:   ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w -X main.version=${{ steps.ver.outputs.version }}" \
+            -o "dist/${{ steps.ver.outputs.asset_base }}" \
+            ./cmd/cf-list-bouncer
+
+      - name: SBOM (CycloneDX, binary-based)
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          file: dist/${{ steps.ver.outputs.asset_base }}
+          format: cyclonedx-json
+          output-file: dist/${{ steps.ver.outputs.asset_base }}.sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          # v4+ requires unique artifact names across the matrix
+          name: ${{ steps.ver.outputs.asset_base }}
+          path: |
+            dist/${{ steps.ver.outputs.asset_base }}
+            dist/${{ steps.ver.outputs.asset_base }}.sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # ----- release -------------------------------------------------------
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write   # gh release create
+      id-token: write   # cosign keyless OIDC
+    steps:
+      - uses: actions/checkout@v7
+        # fetch-depth: 0 NOT needed: CHANGELOG.md is in the working tree
+        # at the tagged commit.
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: stage release assets
+        id: stage
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          mkdir -p release
+          find artifacts -type f -name "cf-list-bouncer_${VERSION}_*" \
+            -exec cp -v {} release/ \;
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: SHA256SUMS
+        working-directory: release
+        run: |
+          sha256sum cf-list-bouncer_* | LC_ALL=C sort > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: sigstore/cosign-installer@v4.1.3
+
+      - name: cosign sign-blob (keyless OIDC)
+        working-directory: release
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
+          cosign sign-blob --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+
+      - name: extract release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.stage.outputs.version }}
+        run: |
+          # Keep-a-Changelog: print the body of "## [VERSION] - date" up to the next "## [".
+          awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (inblock) exit
+              if (index($0, "## [" ver "]") == 1) { inblock = 1; next }
+            }
+            inblock { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! [ -s release-notes.md ]; then
+            echo "::warning::no CHANGELOG section for $VERSION, falling back"
+            echo "Release ${VERSION}." > release-notes.md
+          fi
+          cat >> release-notes.md <<'NOTES'
+
+          ### Verifying the release
+
+          ```sh
+          cosign verify-blob \
+            --certificate SHA256SUMS.pem \
+            --signature   SHA256SUMS.sig \
+            --certificate-identity-regexp 'https://github.com/ynsta/cf-list-bouncer/.+' \
+            --certificate-oidc-issuer     'https://token.actions.githubusercontent.com' \
+            SHA256SUMS
+          sha256sum --check --ignore-missing SHA256SUMS
+          ```
+
+          Each binary ships with a CycloneDX SBOM (`*.sbom.cdx.json`) generated by syft
+          against the binary itself. The container image is
+          `ghcr.io/ynsta/cf-list-bouncer` (see the Image workflow).
+          NOTES
+
+      - name: create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        working-directory: release
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file ../release-notes.md \
+            --verify-tag \
+            cf-list-bouncer_* SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem SHA256SUMS.cosign.bundle

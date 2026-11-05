@@ -1,0 +1,7 @@
+# Build output
+/dist/
+/cf-list-bouncer
+coverage.out
+
+# Local configuration: holds secrets, never committed
+.env

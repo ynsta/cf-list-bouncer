@@ -1,0 +1,56 @@
+name: Image
+
+# Builds and pushes the container image with ko on version tags. Kept apart from
+# release.yml: an image push fails in different ways (registry, auth) than a binary
+# release, and one must not block the other.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write   # push to ghcr.io with GITHUB_TOKEN
+      id-token: write   # cosign keyless OIDC
+    env:
+      KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Logs in to ghcr.io with GITHUB_TOKEN when KO_DOCKER_REPO is on ghcr.io.
+      - uses: ko-build/setup-ko@v0.10
+        with:
+          version: v0.19.1
+      - uses: sigstore/cosign-installer@v4.1.3
+
+      - name: build and push
+        id: ko
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            TAG="0.0.0-${GITHUB_SHA::7}"
+            TAGS="$TAG"
+          else
+            TAGS="${TAG},latest"
+          fi
+          export VERSION="${TAG#v}"
+          IMAGE=$(ko build --bare --tags "$TAGS" --sbom=spdx ./cmd/cf-list-bouncer)
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "pushed ${IMAGE}"
+
+      - name: cosign sign (keyless OIDC, by digest)
+        env:
+          COSIGN_YES: "true"
+          IMAGE: ${{ steps.ko.outputs.image }}
+        run: cosign sign "$IMAGE"
