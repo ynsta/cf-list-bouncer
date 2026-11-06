@@ -69,6 +69,10 @@ groups:
       - alert: CfListBouncerDown
         expr: up{job="cf-list-bouncer"} == 0
         for: 5m
+      - alert: CfListBouncerRateLimited
+        # Cloudflare keeps refusing pushes: list name containing "crowdsec", or a stuck list.
+        expr: increase(cf_list_bouncer_syncs_total{result="rate_limited"}[1h]) > 3
+        for: 15m
       - alert: CfListBouncerListFull
         # Items are being dropped: raise MAX_ITEMS (if the plan allows) or narrow ORIGINS.
         expr: cf_list_bouncer_decisions_skipped{reason="over_limit"} > 0
@@ -82,6 +86,7 @@ groups:
 | exits at start, `invalid configuration` | a variable is missing or malformed | read the listed errors; every one is reported |
 | `unexpected LAPI status 403` | wrong or revoked bouncer key | `cscli bouncers list`, re-add, update `.env` |
 | `cloudflare API error ... 10000 Authentication error` | token wrong, expired, or lacks *Account Filter Lists: Edit* | recreate the token (see `cloudflare-setup.md`) |
+| `push rate limited, backing off`, `429` `10040` on every push | list name contains `crowdsec` (one update per 24 h), or Cloudflare locked the list | rename the list (`cloudflare-setup.md`); if it persists, Cloudflare support |
 | `bulk operation failed` | Cloudflare rejected an item or the list is full | check `MAX_ITEMS` against the plan; open an issue with the error text |
 | banned IP still reaches the server | WAF rule missing or ordered after an allow rule, or the ban is not from a synced origin | check the rule; `cscli decisions list -o json` → `origin` |
 | list contains old bans | the bouncer is not running or failing | `/healthz`, logs; the list is only updated by a running bouncer |

@@ -26,6 +26,9 @@ import (
 
 const serviceName = "cf-list-bouncer"
 
+// The Cloudflare 429 error must reach the syncer as a rate limit, or the backoff is lost.
+var _ syncer.RateLimited = (*cloudflare.RateLimitError)(nil)
+
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 

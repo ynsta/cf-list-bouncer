@@ -7,7 +7,7 @@ WAF custom rule on that list does the blocking. Banned clients never reach your 
 ```
 CrowdSec LAPI ──(every 30 s: active bans)──▶ cf-list-bouncer ──(replace list)──▶ Cloudflare IP List
                                                                                      │
-                                       WAF custom rule:  ip.src in $crowdsec_bans → Block
+                                       WAF custom rule:  ip.src in $edge_bans → Block
 ```
 
 Why a list and not a Worker: a WAF rule on a list costs nothing per request, works on the
@@ -27,13 +27,16 @@ between a ban and the next sync.
   Cloudflare to apply it.
 - A failed LAPI read never touches the list. Expired or deleted bans disappear from the
   list on the next sync.
+- A Cloudflare rate limit (`429`) makes it back off, up to 30 min between attempts, instead
+  of retrying every interval.
 
 Details: [behaviour spec](docs/spec/sync.md), [architecture](docs/design/architecture.md).
 
 ## Quick start
 
 1. **Cloudflare**: create an IP List, a WAF rule using it, and an API token allowed to edit
-   lists ([step by step](docs/sre/cloudflare-setup.md)).
+   lists ([step by step](docs/sre/cloudflare-setup.md)). **Keep `crowdsec` out of the list
+   name**: Cloudflare then allows only one update per 24 hours.
 2. **CrowdSec**: register the bouncer and keep the key:
    ```sh
    cscli bouncers add cf-list-bouncer
@@ -76,7 +79,8 @@ startup with every error listed.
 
 - `GET /healthz`: `200` when a sync succeeded within the last 3 intervals, `503` otherwise.
 - `GET /metrics`: Prometheus metrics prefixed `cf_list_bouncer_` (list size, syncs by
-  result, last success, skipped decisions by reason). Suggested alerts in
+  result (`pushed`, `unchanged`, `error`, `rate_limited`), last success, skipped decisions
+  by reason). Suggested alerts in
   [docs/sre/deploy.md](docs/sre/deploy.md).
 
 ## Verifying a release

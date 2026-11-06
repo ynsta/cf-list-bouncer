@@ -19,6 +19,12 @@ import (
 // bouncer reports itself unhealthy. One failed sync is normal (API blip); three is not.
 const healthyAfterIntervals = 3
 
+// DefaultMaxBackoff caps the wait between pushes while the sink keeps rate limiting.
+const DefaultMaxBackoff = 30 * time.Minute
+
+// maxRetryAfter caps a Retry-After asked for by the sink, against absurd values.
+const maxRetryAfter = 24 * time.Hour
+
 // ErrTooManyFailures is returned by Run when MaxConsecutiveFailures is reached. The
 // process then exits and the container restart policy takes over.
 var ErrTooManyFailures = errors.New("too many consecutive sync failures")
@@ -33,6 +39,14 @@ type Sink interface {
 	ReplaceItems(ctx context.Context, items []blocklist.Item) error
 }
 
+// RateLimited is implemented by sink errors meaning "slow down". RateLimited returns the
+// delay the remote asked for, or zero. Such errors trigger a backoff and never count
+// toward MaxConsecutiveFailures: restarting would only push again, sooner.
+type RateLimited interface {
+	error
+	RateLimited() time.Duration
+}
+
 // Options tunes a Syncer.
 type Options struct {
 	Interval time.Duration
@@ -40,7 +54,9 @@ type Options struct {
 	// edits in the Cloudflare dashboard. Zero disables it.
 	ResyncInterval         time.Duration
 	MaxConsecutiveFailures int
-	Build                  blocklist.Options
+	// MaxBackoff caps the wait after repeated rate limits. Zero means DefaultMaxBackoff.
+	MaxBackoff time.Duration
+	Build      blocklist.Options
 }
 
 // Metrics are the Prometheus collectors of a Syncer.
@@ -66,7 +82,9 @@ type Syncer struct {
 	lastSuccess time.Time
 	lastPush    time.Time
 	pushed      []blocklist.Item // nil until the first successful push
-	failures    int
+	failures    int              // failed syncs since the last success, any cause
+	hardFails   int              // same, rate limits excluded: drives MaxConsecutiveFailures
+	rateLimits  int              // rate-limited pushes since the last success
 }
 
 // New returns a Syncer and registers its metrics on reg.
@@ -96,7 +114,7 @@ func New(source Source, sink Sink, opts Options, log *slog.Logger, reg prometheu
 
 	reg.MustRegister(m.Items, m.Skipped, m.Syncs, m.LastSuccess, m.ConsecutiveFailures)
 
-	for _, r := range []string{"pushed", "unchanged", "error"} {
+	for _, r := range []string{"pushed", "unchanged", "error", "rate_limited"} {
 		m.Syncs.WithLabelValues(r) // export zero values so rate() works from the start
 	}
 
@@ -118,33 +136,56 @@ func (s *Syncer) SetClock(now func() time.Time) {
 // Metrics exposes the collectors, for tests.
 func (s *Syncer) Metrics() Metrics { return s.metrics }
 
-// Run syncs immediately, then every Interval, until ctx is cancelled (returns nil) or
-// MaxConsecutiveFailures is reached (returns ErrTooManyFailures).
+// Run syncs immediately, then Interval after each sync, until ctx is cancelled (returns
+// nil) or MaxConsecutiveFailures is reached (returns ErrTooManyFailures). A rate-limited
+// push waits longer instead: see Backoff.
 func (s *Syncer) Run(ctx context.Context) error {
-	ticker := time.NewTicker(s.opts.Interval)
-	defer ticker.Stop()
-
 	for {
 		err := s.RunOnce(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-
-			n := s.failureCount()
-			s.log.WarnContext(ctx, "sync failed", "error", err, "consecutive_failures", n)
-
-			if s.opts.MaxConsecutiveFailures > 0 && n >= s.opts.MaxConsecutiveFailures {
-				return fmt.Errorf("%w (%d): last error: %w", ErrTooManyFailures, n, err)
-			}
-		}
 
 		select {
 		case <-ctx.Done():
+			return nil // shutdown: err, if any, is the cancellation
+		default:
+		}
+
+		delay := s.opts.Interval
+		if err != nil {
+			delay, err = s.afterFailure(ctx, err)
+			if err != nil {
+				return err
+			}
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
 			return nil
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
+}
+
+// Backoff is the wait after the attempt-th rate limit in a row (attempt >= 1): interval
+// doubled per attempt, capped at maxBackoff, but never shorter than retryAfter (itself
+// capped at 24 h).
+func Backoff(interval, maxBackoff time.Duration, attempt int, retryAfter time.Duration) time.Duration {
+	d := interval
+	for range attempt {
+		if d >= maxBackoff/2 {
+			d = maxBackoff
+
+			break
+		}
+
+		d *= 2
+	}
+
+	d = min(d, maxBackoff)
+
+	return max(d, min(retryAfter, maxRetryAfter))
 }
 
 // RunOnce performs one reconciliation. A LAPI error never reaches Cloudflare: pushing a
@@ -166,6 +207,10 @@ func (s *Syncer) RunOnce(ctx context.Context) error {
 
 	err = s.sink.ReplaceItems(ctx, items)
 	if err != nil {
+		if _, ok := errors.AsType[RateLimited](err); ok {
+			return s.rateLimited(fmt.Errorf("push list: %w", err))
+		}
+
 		return s.failed(fmt.Errorf("push list: %w", err))
 	}
 
@@ -189,6 +234,36 @@ func (s *Syncer) Healthy() bool {
 	return s.now().Sub(ref) <= healthyAfterIntervals*s.opts.Interval
 }
 
+// afterFailure logs a failed sync and returns the delay before the next one, or the error
+// that ends Run.
+func (s *Syncer) afterFailure(ctx context.Context, syncErr error) (time.Duration, error) {
+	if rl, ok := errors.AsType[RateLimited](syncErr); ok {
+		n := s.rateLimitCount()
+		delay := Backoff(s.opts.Interval, s.maxBackoff(), n, rl.RateLimited())
+		s.log.WarnContext(ctx, "push rate limited, backing off", "error", syncErr,
+			"consecutive_rate_limits", n, "retry_in", delay.String())
+
+		return delay, nil
+	}
+
+	n := s.failureCount()
+	s.log.WarnContext(ctx, "sync failed", "error", syncErr, "consecutive_failures", n)
+
+	if s.opts.MaxConsecutiveFailures > 0 && n >= s.opts.MaxConsecutiveFailures {
+		return 0, fmt.Errorf("%w (%d): last error: %w", ErrTooManyFailures, n, syncErr)
+	}
+
+	return s.opts.Interval, nil
+}
+
+func (s *Syncer) maxBackoff() time.Duration {
+	if s.opts.MaxBackoff > 0 {
+		return s.opts.MaxBackoff
+	}
+
+	return DefaultMaxBackoff
+}
+
 func (s *Syncer) needsPush(items []blocklist.Item) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,6 +282,8 @@ func (s *Syncer) succeeded(result string, items []blocklist.Item, pushed bool) {
 	now := s.now()
 	s.lastSuccess = now
 	s.failures = 0
+	s.hardFails = 0
+	s.rateLimits = 0
 
 	if pushed {
 		s.pushed = items
@@ -224,7 +301,20 @@ func (s *Syncer) failed(err error) error {
 	defer s.mu.Unlock()
 
 	s.failures++
+	s.hardFails++
 	s.metrics.Syncs.WithLabelValues("error").Inc()
+	s.metrics.ConsecutiveFailures.Set(float64(s.failures))
+
+	return err
+}
+
+func (s *Syncer) rateLimited(err error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.failures++
+	s.rateLimits++
+	s.metrics.Syncs.WithLabelValues("rate_limited").Inc()
 	s.metrics.ConsecutiveFailures.Set(float64(s.failures))
 
 	return err
@@ -234,7 +324,14 @@ func (s *Syncer) failureCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.failures
+	return s.hardFails
+}
+
+func (s *Syncer) rateLimitCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.rateLimits
 }
 
 // recordSkipped exports skip counts and logs the ones that point to a problem. Non-ban

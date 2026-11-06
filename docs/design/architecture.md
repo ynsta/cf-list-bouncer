@@ -17,17 +17,22 @@
 - **`blocklist.Build`** is pure: decisions in, sorted items and skip counts out. All the
   normalization rules of `docs/spec/sync.md` live here and nowhere else.
 - **`syncer.Syncer`** owns the loop and the only mutable state: the last pushed item set,
-  the time of the last push and of the last success, the failure counter. It reaches the
+  the time of the last push and of the last success, the failure and rate-limit counters,
+  and the backoff after a rate limit. It reaches the
   edges through two one-method interfaces (`Source`, `Sink`), which the tests fake.
 - **`cloudflare.Client`** replaces all items with one `PUT` and polls the asynchronous bulk
-  operation until `completed` or `failed`.
+  operation until `completed` or `failed`. A `429` comes back as a `RateLimitError`
+  carrying `Retry-After`; the syncer sees it through its `RateLimited` interface, without
+  importing the package.
 - **`server`** exposes health and metrics; it has no other routes.
 
 ## Why the whole list is replaced
 
 See [ADR 0001](../adr/0001-full-list-replace-from-snapshot.md). In short: full snapshot +
 full replace is idempotent, survives restarts and manual edits, and needs no
-per-item IDs. The cost, one bulk operation per change, is small at local-ban volumes.
+per-item IDs. The cost, one bulk operation per change, is small at local-ban volumes, as
+long as the list name does not contain `crowdsec`: Cloudflare limits lists it attributes to
+a CrowdSec integration to one bulk operation per 24 hours (see `docs/sre/cloudflare-setup.md`).
 
 ## State and restarts
 

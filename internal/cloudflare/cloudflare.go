@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,7 +32,28 @@ var (
 	ErrAPI              = errors.New("cloudflare API error")
 	ErrOperationFailed  = errors.New("cloudflare bulk operation failed")
 	ErrOperationTimeout = errors.New("cloudflare bulk operation timed out")
+	// ErrRateLimited matches a 429 answer. Retrying soon only extends the limit: back off.
+	ErrRateLimited = errors.New("cloudflare rate limit")
 )
+
+// RateLimitError is returned for an HTTP 429. It matches ErrRateLimited and ErrAPI.
+type RateLimitError struct {
+	retryAfter time.Duration
+	err        error
+}
+
+// RetryAfter is the delay asked for by the Retry-After header, or zero when the response
+// gave none (Cloudflare usually does not).
+func (e *RateLimitError) RetryAfter() time.Duration { return e.retryAfter }
+
+// RateLimited reports the same delay; it lets callers detect the error through an
+// interface, without importing this package.
+func (e *RateLimitError) RateLimited() time.Duration { return e.retryAfter }
+
+func (e *RateLimitError) Error() string { return e.err.Error() }
+
+// Unwrap exposes both the sentinel and the underlying API error.
+func (e *RateLimitError) Unwrap() []error { return []error{ErrRateLimited, e.err} }
 
 // Options configures a Client.
 type Options struct {
@@ -177,11 +199,20 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, resul
 // decode unwraps the Cloudflare response envelope into result, or returns the API
 // errors it carries.
 func decode(resp *http.Response, result any) error {
+	err := decodeEnvelope(resp, result)
+	if err != nil && resp.StatusCode == http.StatusTooManyRequests {
+		return &RateLimitError{retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()), err: err}
+	}
+
+	return err
+}
+
+func decodeEnvelope(resp *http.Response, result any) error {
 	var env envelope
 
 	err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(&env)
 	if err != nil {
-		return fmt.Errorf("status %d, undecodable body: %w", resp.StatusCode, err)
+		return fmt.Errorf("%w: status %d, undecodable body: %w", ErrAPI, resp.StatusCode, err)
 	}
 
 	if !env.Success || resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -199,4 +230,24 @@ func decode(resp *http.Response, result any) error {
 	}
 
 	return nil
+}
+
+// parseRetryAfter reads a Retry-After value: delay in seconds or an HTTP date. Anything
+// else, or a time in the past, gives zero.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	if v == "" {
+		return 0
+	}
+
+	secs, err := strconv.Atoi(v)
+	if err == nil {
+		return max(time.Duration(secs)*time.Second, 0)
+	}
+
+	at, err := http.ParseTime(v)
+	if err != nil {
+		return 0
+	}
+
+	return max(at.Sub(now), 0)
 }
