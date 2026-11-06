@@ -55,13 +55,21 @@ every 2 s, up to 2 min).
   Cloudflare**.
 - A Cloudflare error (API error, operation `failed`, timeout) ends the sync; the next sync
   pushes again even if the set did not change.
-- Each failed sync increments `cf_list_bouncer_consecutive_failures`; a success resets it.
-  When it reaches `MAX_CONSECUTIVE_FAILURES` (> 0), the process exits with status 1.
+- A Cloudflare `429` (rate limit, e.g. error `10040`) is counted as
+  `syncs_total{result="rate_limited"}`, not `error`, and delays the next sync: after the
+  n-th rate limit in a row, wait `SYNC_INTERVAL × 2ⁿ`, capped at 30 min, and never less than
+  the response's `Retry-After` (capped at 24 h). Retrying at the normal pace only extends
+  the limit.
+- Each failed sync, rate-limited or not, increments `cf_list_bouncer_consecutive_failures`;
+  a success resets it. When the failures **other than rate limits** reach
+  `MAX_CONSECUTIVE_FAILURES` (> 0), the process exits with status 1. Rate limits never stop
+  the process: a restart would push again at once.
 - Errors and logs never contain the LAPI key or the Cloudflare token.
 
 ## 6. Schedule and shutdown
 
-The first sync runs at startup, then every `SYNC_INTERVAL`. SIGINT/SIGTERM stops the loop,
+The first sync runs at startup, then `SYNC_INTERVAL` after the end of each sync (longer after
+a rate limit, §5). SIGINT/SIGTERM stops the loop,
 shuts the ops server down within 5 s and exits 0. The list is left as it is.
 
 ## 7. Health

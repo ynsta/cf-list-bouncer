@@ -3,6 +3,7 @@ package cloudflare_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,9 @@ type fakeCF struct {
 	opError  string
 	putBody  []map[string]string
 	putFail  bool
+	// putLimited answers the PUT with 429 / 10040 and this Retry-After value ("" = header absent).
+	putLimited bool
+	retryAfter string
 }
 
 func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +45,15 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && r.URL.Path == "/accounts/"+account+"/rules/lists/"+list+"/items":
 		if err := json.NewDecoder(r.Body).Decode(&f.putBody); err != nil {
 			f.t.Errorf("decode PUT body: %v", err)
+		}
+		if f.putLimited {
+			if f.retryAfter != "" {
+				w.Header().Set("Retry-After", f.retryAfter)
+			}
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":10040,"message":"you have been ratelimited please wait and try again"}],"result":null}`))
+
+			return
 		}
 		if f.putFail {
 			w.WriteHeader(http.StatusBadRequest)
@@ -138,5 +151,63 @@ func TestReplaceItems_Errors(t *testing.T) {
 				t.Fatalf("error leaks the token: %v", err)
 			}
 		})
+	}
+}
+
+func TestReplaceItems_RateLimited(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		retryAfter string
+		want       time.Duration
+	}{
+		{name: "seconds", retryAfter: "120", want: 2 * time.Minute},
+		{name: "absent", retryAfter: "", want: 0},
+		{name: "garbage", retryAfter: "soon", want: 0},
+		{name: "negative", retryAfter: "-5", want: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := &fakeCF{statuses: []string{"completed"}, putLimited: true, retryAfter: tc.retryAfter}
+			err := newClient(t, f, token).ReplaceItems(context.Background(), []blocklist.Item{{IP: "203.0.113.1"}})
+
+			if !errors.Is(err, cloudflare.ErrRateLimited) {
+				t.Fatalf("err = %v, want ErrRateLimited", err)
+			}
+			if !errors.Is(err, cloudflare.ErrAPI) {
+				t.Fatalf("err = %v, want it to still match ErrAPI", err)
+			}
+
+			var rl *cloudflare.RateLimitError
+			if !errors.As(err, &rl) {
+				t.Fatalf("err = %v, want a *RateLimitError", err)
+			}
+			if got := rl.RetryAfter(); got != tc.want {
+				t.Fatalf("RetryAfter = %v, want %v", got, tc.want)
+			}
+			if !strings.Contains(err.Error(), "10040") {
+				t.Fatalf("err = %v, want the API error code kept", err)
+			}
+		})
+	}
+}
+
+func TestReplaceItems_RetryAfterHTTPDate(t *testing.T) {
+	t.Parallel()
+
+	at := time.Now().Add(10 * time.Minute).UTC().Format(http.TimeFormat)
+	f := &fakeCF{statuses: []string{"completed"}, putLimited: true, retryAfter: at}
+	err := newClient(t, f, token).ReplaceItems(context.Background(), nil)
+
+	var rl *cloudflare.RateLimitError
+	if !errors.As(err, &rl) {
+		t.Fatalf("err = %v, want a *RateLimitError", err)
+	}
+	if got := rl.RetryAfter(); got < 9*time.Minute || got > 10*time.Minute {
+		t.Fatalf("RetryAfter = %v, want about 10m", got)
 	}
 }

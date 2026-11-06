@@ -3,6 +3,7 @@ package syncer_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -119,6 +120,7 @@ func TestRunOnce_PushesThenSkipsUnchanged(t *testing.T) {
 # TYPE cf_list_bouncer_syncs_total counter
 cf_list_bouncer_syncs_total{result="error"} 0
 cf_list_bouncer_syncs_total{result="pushed"} 1
+cf_list_bouncer_syncs_total{result="rate_limited"} 0
 cf_list_bouncer_syncs_total{result="unchanged"} 2
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "cf_list_bouncer_syncs_total"); err != nil {
@@ -251,5 +253,84 @@ func TestRun_ReturnsNilOnCancel(t *testing.T) {
 
 	if err := <-done; err != nil {
 		t.Fatalf("err = %v, want nil on shutdown", err)
+	}
+}
+
+type rateLimitErr struct{ after time.Duration }
+
+func (e rateLimitErr) Error() string              { return "429 rate limited" }
+func (e rateLimitErr) RateLimited() time.Duration { return e.after }
+
+func TestRunOnce_RateLimitCountedApart(t *testing.T) {
+	t.Parallel()
+
+	src := &fakeSource{decisions: []lapi.Decision{ban("34.84.140.206")}}
+	sink := &fakeSink{err: fmt.Errorf("wrapped: %w", rateLimitErr{})}
+	s, _ := newSyncer(t, src, sink, &clock{t: time.Unix(1_800_000_000, 0)}, syncer.Options{})
+
+	var rl syncer.RateLimited
+	if err := s.RunOnce(context.Background()); !errors.As(err, &rl) {
+		t.Fatalf("err = %v, want a RateLimited error", err)
+	}
+
+	m := s.Metrics()
+	if got := testutil.ToFloat64(m.Syncs.WithLabelValues("rate_limited")); got != 1 {
+		t.Fatalf("rate_limited = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.Syncs.WithLabelValues("error")); got != 0 {
+		t.Fatalf("error = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(m.ConsecutiveFailures); got != 1 {
+		t.Fatalf("consecutive_failures = %v, want 1", got)
+	}
+}
+
+func TestRun_RateLimitsNeverStopTheProcess(t *testing.T) {
+	t.Parallel()
+
+	src := &fakeSource{decisions: []lapi.Decision{ban("34.84.140.206")}}
+	sink := &fakeSink{err: rateLimitErr{}}
+	s, _ := newSyncer(t, src, sink, &clock{t: time.Unix(1_800_000_000, 0)},
+		syncer.Options{Interval: time.Millisecond, MaxBackoff: 2 * time.Millisecond, MaxConsecutiveFailures: 2})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := s.Run(ctx); err != nil {
+		t.Fatalf("err = %v, want nil: rate limits must not reach MaxConsecutiveFailures", err)
+	}
+	if got := testutil.ToFloat64(s.Metrics().Syncs.WithLabelValues("rate_limited")); got < 3 {
+		t.Fatalf("rate_limited = %v, want several retries", got)
+	}
+}
+
+func TestBackoff(t *testing.T) {
+	t.Parallel()
+
+	const (
+		interval = 30 * time.Second
+		maxWait  = 30 * time.Minute
+	)
+
+	cases := []struct {
+		attempt    int
+		retryAfter time.Duration
+		want       time.Duration
+	}{
+		{attempt: 1, want: time.Minute},
+		{attempt: 2, want: 2 * time.Minute},
+		{attempt: 5, want: 16 * time.Minute},
+		{attempt: 6, want: maxWait},
+		{attempt: 1000, want: maxWait},
+		{attempt: 1, retryAfter: 10 * time.Minute, want: 10 * time.Minute},
+		{attempt: 6, retryAfter: 2 * time.Hour, want: 2 * time.Hour},
+		{attempt: 1, retryAfter: 48 * time.Hour, want: 24 * time.Hour},
+		{attempt: 3, retryAfter: time.Second, want: 4 * time.Minute},
+	}
+
+	for _, tc := range cases {
+		if got := syncer.Backoff(interval, maxWait, tc.attempt, tc.retryAfter); got != tc.want {
+			t.Errorf("Backoff(attempt %d, retryAfter %v) = %v, want %v", tc.attempt, tc.retryAfter, got, tc.want)
+		}
 	}
 }
