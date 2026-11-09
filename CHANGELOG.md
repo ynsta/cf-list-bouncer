@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A local ban was missing from the Cloudflare list when the same address also had a
+  longer community (`CAPI`) or blocklist decision: CrowdSec returned only the longest
+  decision per address before filtering by origin. Known scanners, the addresses most
+  likely to be on community blocklists, kept reaching the server. Every decision of the
+  address is now requested.
+
 ## [0.1.1] - 2026-11-06
 
 ### Fixed

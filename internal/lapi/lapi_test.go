@@ -36,7 +36,7 @@ func TestActiveDecisions_RequestAndDecode(t *testing.T) {
 	if gotPath != "/v1/decisions/stream" {
 		t.Errorf("path = %q", gotPath)
 	}
-	for _, want := range []string{"startup=true", "scopes=ip%2Crange", "origins=crowdsec%2Ccscli"} {
+	for _, want := range []string{"startup=true", "dedup=false", "scopes=ip%2Crange", "origins=crowdsec%2Ccscli"} {
 		if !strings.Contains(gotQuery, want) {
 			t.Errorf("query %q lacks %q", gotQuery, want)
 		}
