@@ -5,7 +5,12 @@ Source of truth for what the bouncer does. Code: `internal/blocklist`, `internal
 ## 1. Input
 
 Each sync reads the **full set** of active decisions from the LAPI stream endpoint with
-`startup=true`, `scopes=ip,range`, and `origins=<ORIGINS>`.
+`startup=true`, `dedup=false`, `scopes=ip,range`, and `origins=<ORIGINS>`.
+
+`dedup=false` matters. Without it the LAPI keeps only the longest decision per value, across
+all origins, before applying the origin filter: a local ban on an address that also has a
+longer community (`CAPI`) or blocklist decision would be missing from the list. Every
+decision of the address is returned instead, and §3 deduplicates them.
 
 ## 2. Which decisions become list items
 

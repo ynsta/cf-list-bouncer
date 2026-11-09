@@ -15,8 +15,9 @@ import (
 // maxErrorBody bounds how much of an error response is quoted in the returned error.
 const maxErrorBody = 512
 
-// maxResponseBody bounds a decisions response. Local decisions are a few thousand at
-// most; anything larger means the origin filter is not applied.
+// maxResponseBody bounds a decisions response. Local decisions, every one of an address
+// included (dedup=false), are some thousands; anything larger means the origin filter is
+// not applied.
 const maxResponseBody = 64 << 20
 
 // Decision is one active decision as returned by the LAPI.
@@ -59,9 +60,14 @@ func New(baseURL, apiKey string, origins []string, userAgent string, hc *http.Cl
 // It asks the stream endpoint with startup=true on every call, which returns the full
 // current set rather than a delta. The caller replaces the whole Cloudflare list each
 // time, so a full snapshot is what it needs, and a missed delta can never cause drift.
+//
+// dedup=false is required: by default the stream keeps only the longest decision per
+// value across all origins and applies the origin filter afterwards, so a local ban on an
+// address that also has a longer community (CAPI) or blocklist decision is dropped.
 func (c *Client) ActiveDecisions(ctx context.Context) ([]Decision, error) {
 	q := url.Values{}
 	q.Set("startup", "true")
+	q.Set("dedup", "false")
 	q.Set("scopes", "ip,range")
 
 	if len(c.origins) > 0 {

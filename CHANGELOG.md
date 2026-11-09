@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-09
+
+### Fixed
+
+- A local ban was missing from the Cloudflare list when the same address also had a
+  longer community (`CAPI`) or blocklist decision: CrowdSec returned only the longest
+  decision per address before filtering by origin. Known scanners, the addresses most
+  likely to be on community blocklists, kept reaching the server. Every decision of the
+  address is now requested.
+
 ## [0.1.1] - 2026-11-06
 
 ### Fixed
@@ -33,6 +43,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Signed Linux binaries with SBOM, and a signed multi-arch container image on ghcr.io.
 - `.env.example` listing every setting with its default.
 
-[Unreleased]: https://github.com/ynsta/cf-list-bouncer/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ynsta/cf-list-bouncer/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ynsta/cf-list-bouncer/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ynsta/cf-list-bouncer/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ynsta/cf-list-bouncer/releases/tag/v0.1.0

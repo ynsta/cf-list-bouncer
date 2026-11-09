@@ -14,6 +14,8 @@
 
 - **`lapi.Client`** asks the stream endpoint with `startup=true` on every sync, so each
   call returns the complete current set. No delta bookkeeping, nothing to lose on restart.
+  It also sends `dedup=false`: the default keeps one decision per address across all
+  origins, which hides a local ban behind a longer community one (`docs/spec/sync.md` §1).
 - **`blocklist.Build`** is pure: decisions in, sorted items and skip counts out. All the
   normalization rules of `docs/spec/sync.md` live here and nowhere else.
 - **`syncer.Syncer`** owns the loop and the only mutable state: the last pushed item set,

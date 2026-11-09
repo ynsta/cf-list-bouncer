@@ -88,5 +88,5 @@ groups:
 | `cloudflare API error ... 10000 Authentication error` | token wrong, expired, or lacks *Account Filter Lists: Edit* | recreate the token (see `cloudflare-setup.md`) |
 | `push rate limited, backing off`, `429` `10040` on every push | list name contains `crowdsec` (one update per 24 h), or Cloudflare locked the list | rename the list (`cloudflare-setup.md`); if it persists, Cloudflare support |
 | `bulk operation failed` | Cloudflare rejected an item or the list is full | check `MAX_ITEMS` against the plan; open an issue with the error text |
-| banned IP still reaches the server | WAF rule missing or ordered after an allow rule, or the ban is not from a synced origin | check the rule; `cscli decisions list -o json` → `origin` |
+| banned IP still reaches the server | WAF rule missing or ordered after an allow rule; the ban is not from a synced origin; or a version before 0.1.2, whose list missed local bans also covered by a longer community decision | check the rule; `cscli alerts list --ip <IP>` for local alerts (`cscli decisions list` also keeps only the longest decision per address, so it may show only `CAPI`); upgrade |
 | list contains old bans | the bouncer is not running or failing | `/healthz`, logs; the list is only updated by a running bouncer |
